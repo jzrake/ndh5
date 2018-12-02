@@ -1,8 +1,8 @@
 #pragma once
-#include <iostream>
 #include <string>
 #include <vector>
 #include <hdf5.h>
+#include <ndarray.hpp>
 
 
 
@@ -27,16 +27,58 @@ namespace h5
     template<typename T> static inline Datatype make_datatype_for(const T& val);
 
     namespace detail {
+        class hyperslab;
         static inline herr_t get_last_error(unsigned, const H5E_error2_t*, void*);
-        static inline hid_t check(hid_t result);
+        template<typename T> static inline T check(T result);
         template<typename T> static inline const void* scalar_address(const T& val);
     }
 }
 
-
+#include <iostream>
 
 
 // ============================================================================
+struct h5::detail::hyperslab
+{
+    hyperslab() {}
+
+    template<typename Selector>
+    hyperslab(Selector sel)
+    {
+        auto sel_shape = sel.shape();
+        start = std::vector<hsize_t>(sel.start.begin(), sel.start.end());
+        skips = std::vector<hsize_t>(sel.skips.begin(), sel.skips.end());
+        count = std::vector<hsize_t>(sel_shape.begin(), sel_shape.end());
+        block = std::vector<hsize_t>(sel.rank, 1);
+    }
+
+    void check_valid(hsize_t rank) const
+    {
+        if (start.size() != rank ||
+            skips.size() != rank ||
+            count.size() != rank ||
+            block.size() != rank)
+        {
+            throw std::invalid_argument("inconsistent selection sizes");
+        }
+    }
+
+    void select(hid_t space_id)
+    {
+        check_valid(detail::check(H5Sget_simple_extent_ndims(space_id)));
+        detail::check(H5Sselect_hyperslab(space_id, H5S_SELECT_SET,
+            start.data(),
+            skips.data(),
+            count.data(),
+            block.data()));
+    }
+
+    std::vector<hsize_t> start;
+    std::vector<hsize_t> count;
+    std::vector<hsize_t> skips;
+    std::vector<hsize_t> block;
+};
+
 herr_t h5::detail::get_last_error(unsigned n, const H5E_error2_t *err, void *data)
 {
     if (n == 0)
@@ -46,7 +88,8 @@ herr_t h5::detail::get_last_error(unsigned n, const H5E_error2_t *err, void *dat
     return 0;
 }
 
-hid_t h5::detail::check(hid_t result)
+template<typename T>
+T h5::detail::check(T result)
 {
     if (result < 0)
     {
@@ -184,21 +227,38 @@ class h5::Dataspace
 public:
     static Dataspace scalar()
     {
-        return H5Screate(H5S_SCALAR);
+        return detail::check(H5Screate(H5S_SCALAR));
     }
 
     template<typename Container>
     static Dataspace simple(Container dims)
     {
         auto hdims = std::vector<hsize_t>(dims.begin(), dims.end());
-        return H5Screate_simple(hdims.size(), &hdims[0], nullptr);
+        return detail::check(H5Screate_simple(hdims.size(), &hdims[0], nullptr));
     }
 
-    Dataspace() {}
+    Dataspace()
+    {
+        id = detail::check(H5Screate(H5S_NULL));
+    }
+
+    template<int Rank, int Axis>
+    Dataspace(nd::selector<Rank, Axis> sel)
+    {
+        auto dims = std::vector<hsize_t>(sel.count.begin(), sel.count.end());
+        auto slab = detail::hyperslab(sel);
+        id = detail::check(H5Screate_simple(dims.size(), &dims[0], nullptr));
+        slab.select(id);
+    }
 
     Dataspace(const Dataspace& other)
     {
-        id = H5Scopy(other.id);
+        id = detail::check(H5Scopy(other.id));
+    }
+
+    Dataspace(std::initializer_list<std::size_t> dims)
+    {
+        *this = dims.size() == 0 ? scalar() : simple(std::vector<size_t>(dims));
     }
 
     ~Dataspace()
@@ -233,17 +293,40 @@ public:
 
     std::size_t rank() const
     {
-        return id == -1 ? 0 : H5Sget_simple_extent_ndims(id);        
+        return detail::check(H5Sget_simple_extent_ndims(id));
     }
 
     std::size_t size() const
     {
-        return id == -1 ? 0 : H5Sget_simple_extent_npoints(id);
+        return detail::check(H5Sget_simple_extent_npoints(id));
+    }
+
+    std::vector<std::size_t> extent() const
+    {
+        auto ext = std::vector<hsize_t>(rank());
+        detail::check(H5Sget_simple_extent_dims(id, &ext[0], nullptr));
+        return std::vector<std::size_t>(ext.begin(), ext.end());
     }
 
     std::size_t selection_size() const
     {
-        return id == -1 ? 0 : H5Sget_select_npoints(id);
+        return detail::check(H5Sget_select_npoints(id));
+    }
+
+    std::vector<std::size_t> selection_lower() const
+    {
+        auto lower = std::vector<hsize_t>(rank());
+        auto upper = std::vector<hsize_t>(rank());
+        detail::check(H5Sget_select_bounds(id, &lower[0], &upper[0]));
+        return std::vector<std::size_t>(lower.begin(), lower.end());
+    }
+
+    std::vector<std::size_t> selection_upper() const
+    {
+        auto lower = std::vector<hsize_t>(rank());
+        auto upper = std::vector<hsize_t>(rank());
+        detail::check(H5Sget_select_bounds(id, &lower[0], &upper[0]));
+        return std::vector<std::size_t>(upper.begin(), upper.end());
     }
 
     Dataspace& select_all()
@@ -255,28 +338,6 @@ public:
     Dataspace& select_none()
     {
         detail::check(H5Sselect_none(id));
-        return *this;
-    }
-
-    Dataspace& select_hyperslab(std::vector<std::size_t> start,
-                                std::vector<std::size_t> count,
-                                std::vector<std::size_t> skips,
-                                std::vector<std::size_t> block)
-    {
-        if (start.size() != rank() ||
-            count.size() != rank() ||
-            skips.size() != rank() ||
-            block.size() != rank())
-        {
-            throw std::invalid_argument("inconsistent selection sizes");
-        }
-
-        auto s = std::vector<hsize_t>(start.begin(), start.end());
-        auto c = std::vector<hsize_t>(count.begin(), count.end());
-        auto k = std::vector<hsize_t>(skips.begin(), skips.end());
-        auto b = std::vector<hsize_t>(block.begin(), block.end());
-
-        detail::check(H5Sselect_hyperslab(id, H5S_SELECT_SET, s.data(), c.data(), k.data(), b.data()));
         return *this;
     }
 
@@ -383,6 +444,7 @@ private:
             H5P_DEFAULT,
             H5P_DEFAULT));
     }
+
 
 
 
@@ -496,7 +558,7 @@ public:
     void write(const T& data)
     {
         auto type = check_compatible(make_datatype<typename T::value_type>());
-        auto mspace = Dataspace::simple(std::vector<std::size_t>{data.size()});
+        auto mspace = Dataspace{data.size()};
         auto fspace = get_space();
         detail::check(H5Dwrite(link.id, type.id, mspace.id, fspace.id, H5P_DEFAULT, &data[0]));
     }
@@ -517,13 +579,15 @@ public:
     {
         auto data = T(get_space().size());
         auto type = check_compatible(make_datatype<typename T::value_type>());
-        auto mspace = Dataspace::simple(std::vector<std::size_t>{data.size()});
+        auto mspace = Dataspace{data.size()};
         auto fspace = get_space();
         detail::check(H5Dread(link.id, type.id, mspace.id, fspace.id, H5P_DEFAULT, &data[0]));
         return data;
     }
 
 private:
+
+    // ========================================================================
     Datatype check_compatible(const Datatype& type) const
     {
         if (type != get_type())
@@ -532,17 +596,18 @@ private:
         }
         return type;
     }
-
-    friend class File;
-    friend class Group;
-
     template <class GroupType, class DatasetType>
     friend class h5::Location;
 
+    // ========================================================================
     Dataset(Link link) : link(std::move(link)) {}
     Link link;
 };
 
+
+
+
+// ============================================================================
 template<>
 std::string h5::Dataset::read_scalar<std::string>() const
 {
@@ -634,6 +699,12 @@ public:
     }
 
     template<typename T>
+    DatasetType require_dataset(const std::string& name, const Dataspace& space={})
+    {
+        return require_dataset(name, make_datatype<T>(), space);
+    }
+
+    template<typename T>
     void write_scalar(const std::string& name, const T& value)
     {
         auto type = make_datatype_for(value);
@@ -645,8 +716,16 @@ public:
     void write(const std::string& name, const T& value)
     {
         auto type = make_datatype<typename T::value_type>();
-        auto mspace = Dataspace::simple(std::vector<std::size_t>{value.size()});
-        require_dataset(name, type, mspace).write(value);
+        auto space = Dataspace{value.size()};
+        require_dataset(name, type, space).write(value);
+    }
+
+    template<typename T, int R>
+    void write(const std::string& name, const nd::ndarray<T, R>& data)
+    {
+        auto type = make_datatype<T>();
+        auto space = Dataspace(data.get_selector());
+        // require_dataset(name, type, space).write(data);        
     }
 
     template<typename T>
@@ -912,9 +991,43 @@ SCENARIO("Data spaces can be created", "[h5::Dataspace]")
     REQUIRE(h5::Dataspace::scalar().select_none().selection_size() == 0);
     REQUIRE(h5::Dataspace::simple(std::array<int, 3>{10, 10, 10}).rank() == 3);
     REQUIRE(h5::Dataspace::simple(std::array<int, 3>{10, 10, 10}).size() == 1000);
-    REQUIRE(h5::Dataspace::simple(std::vector<size_t>{10, 21}).size() == 210);
-    REQUIRE_THROWS(h5::Dataspace().select_all());
+    REQUIRE(h5::Dataspace{10, 21}.size() == 210);
+    REQUIRE(h5::Dataspace{10, 21}.selection_size() == 210);
+    REQUIRE(h5::Dataspace{10, 21}.selection_lower() == std::vector<std::size_t>{0, 0});
+    REQUIRE(h5::Dataspace{10, 21}.selection_upper() == std::vector<std::size_t>{9, 20});
     REQUIRE_NOTHROW(h5::Dataspace::scalar().select_all());
+
+    GIVEN("A data space constructed from an nd::selector object")
+    {
+        auto sel = nd::selector<2>(100, 100);
+        auto space = h5::Dataspace(sel);
+
+        THEN("The data space and selector have the same size")
+        {
+            REQUIRE(space.size() == sel.size());
+            REQUIRE(space.size() == sel.size());
+            REQUIRE(space.extent() == std::vector<std::size_t>{100, 100});
+            REQUIRE(space.selection_lower() == std::vector<std::size_t>{0, 0});
+            REQUIRE(space.selection_upper() == std::vector<std::size_t>{99, 99});
+            REQUIRE(space.selection_size() == space.size());
+        }
+
+        WHEN("We create another selector as a subset of the larger one")
+        {
+            auto _ = nd::axis::all();
+            auto sub = sel.select(_|0|5, _|0|10);
+
+            THEN("Another data space, with the same extent but smaller size")
+            {
+                auto sub_space = h5::Dataspace(sub);
+
+                REQUIRE(sub_space.extent() == space.extent());
+                REQUIRE(sub_space.selection_lower() == std::vector<std::size_t>{0, 0});
+                REQUIRE(sub_space.selection_upper() == std::vector<std::size_t>{4, 9});
+                REQUIRE(sub_space.selection_size() == sub.size());
+            }
+        }
+    }
 }
 
 
@@ -1054,4 +1167,12 @@ SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
     }
 }
 
+
+SCENARIO("Data sets can be selected on using ndarray syntax", "[h5::Dataset]")
+{
+    auto file = h5::File("test.h5", "w");
+    auto dset = file.require_dataset<double>("data", {10, 20});
+    // dset.select()
+    // dset.write(data);
+}
 #endif // TEST_NDH5
