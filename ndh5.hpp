@@ -8,7 +8,7 @@
 
 
 // ============================================================================
-namespace h5 // H5_API_START
+namespace h5
 {
     class Link;
     class File;
@@ -16,6 +16,9 @@ namespace h5 // H5_API_START
     class Dataset;
     class Datatype;
     class Dataspace;
+
+    template <class GroupType, class DatasetType>
+    class Location;
 
     enum class Intent { rdwr, rdonly, swmr_write, swmr_read };
     enum class Object { file, group, dataset };
@@ -28,7 +31,7 @@ namespace h5 // H5_API_START
         static inline hid_t check(hid_t result);
         template<typename T> static inline const void* scalar_address(const T& val);
     }
-} // H5_API_END
+}
 
 
 
@@ -66,7 +69,6 @@ template<typename T> const void* h5::detail::scalar_address(const T& val)
 {
     return &val;
 }
-
 
 
 
@@ -313,11 +315,11 @@ private:
         return *this;
     }
 
-    void close(Object location)
+    void close(Object object)
     {
         if (id != -1)
         {
-            switch (location)
+            switch (object)
             {
                 case Object::file   : H5Fclose(id); break;
                 case Object::group  : H5Gclose(id); break;
@@ -335,14 +337,14 @@ private:
         return idx;
     }
 
-    bool contains(const std::string& name, Object location) const
+    bool contains(const std::string& name, Object object) const
     {
         if (H5Lexists(id, name.data(), H5P_DEFAULT))
         {
             H5O_info_t info;
             H5Oget_info_by_name(id, name.data(), &info, H5P_DEFAULT);
 
-            switch (location)
+            switch (object)
             {
                 case Object::file   : return false;
                 case Object::group  : return info.type == H5O_TYPE_GROUP;
@@ -402,7 +404,7 @@ private:
             if (H5Lget_name_by_idx(id, ".",
                 H5_INDEX_NAME, H5_ITER_NATIVE, idx, name, 1024, H5P_DEFAULT) > 1024)
             {
-                throw std::overflow_error("location names longer than 1024 are not supported");
+                throw std::overflow_error("object names longer than 1024 are not supported");
             }
             return name;
         }
@@ -429,6 +431,9 @@ private:
     friend class File;
     friend class Group;
     friend class Dataset;
+
+    template <class GroupType, class DatasetType>
+    friend class h5::Location;
 
     hid_t id = -1;
 };
@@ -530,7 +535,10 @@ private:
 
     friend class File;
     friend class Group;
-    friend class Location;
+
+    template <class GroupType, class DatasetType>
+    friend class h5::Location;
+
     Dataset(Link link) : link(std::move(link)) {}
     Link link;
 };
@@ -550,7 +558,119 @@ std::string h5::Dataset::read_scalar<std::string>() const
 
 
 // ============================================================================
-class h5::Group final
+template <class GroupType, class DatasetType>
+class h5::Location
+{
+public:
+
+    Location() {}
+
+    Location(const Group&) = delete;
+
+    Location(Location&& other)
+    {
+        link = std::move(other.link);
+    }
+
+    Location& operator=(Location&& other)
+    {
+        link = std::move(other.link);
+        return *this;
+    }
+
+    bool is_open() const
+    {
+        return link.id != -1;
+    }
+
+    std::size_t size() const
+    {
+        return link.size();
+    }
+
+    Link::iterator begin() const
+    {
+        return link.begin();
+    }
+
+    Link::iterator end() const
+    {
+        return link.end();
+    }
+
+    GroupType operator[](const std::string& name)
+    {
+        return require_group(name);
+    }
+
+    GroupType open_group(const std::string& name)
+    {
+        return link.open_group(name);
+    }
+
+    GroupType require_group(const std::string& name)
+    {
+        return link.contains(name, Object::group) ? open_group(name) : link.create_group(name);
+    }
+
+    DatasetType open_dataset(const std::string& name)
+    {
+        return link.open_dataset(name);
+    }
+
+    DatasetType require_dataset(const std::string& name, const Datatype& type, const Dataspace& space)
+    {
+        if (link.contains(name, Object::dataset))
+        {
+            auto dset = open_dataset(name);
+
+            if (dset.get_type() == type && dset.get_space() == space)
+            {
+                return dset;
+            }
+            throw std::invalid_argument("data set with different type or space already exists");
+        }
+        return link.create_dataset(name, type, space);
+    }
+
+    template<typename T>
+    void write_scalar(const std::string& name, const T& value)
+    {
+        auto type = make_datatype_for(value);
+        auto space = Dataspace::scalar();
+        require_dataset(name, type, space).write_scalar(value);
+    }
+
+    template<typename T>
+    void write(const std::string& name, const T& value)
+    {
+        auto type = make_datatype<typename T::value_type>();
+        auto mspace = Dataspace::simple(std::vector<std::size_t>{value.size()});
+        require_dataset(name, type, mspace).write(value);
+    }
+
+    template<typename T>
+    T read_scalar(const std::string& name)
+    {
+        return open_dataset(name).template read_scalar<T>();
+    }
+
+    template<typename T>
+    T read(const std::string& name)
+    {
+        return open_dataset(name).template read<T>();
+    }
+
+protected:
+    Location(Link link) : link(std::move(link)) {}
+    Link link;
+};
+
+
+
+
+// ============================================================================
+class h5::Group final : public Location<Group, Dataset>
 {
 public:
     Group() {}
@@ -578,72 +698,16 @@ public:
         link.close(Object::group);
     }
 
-    bool is_open() const
-    {
-        return link.id != -1;
-    }
-
-    std::size_t size() const
-    {
-        return link.size();
-    }
-
-    Link::iterator begin() const
-    {
-        return link.begin();
-    }
-
-    Link::iterator end() const
-    {
-        return link.end();
-    }
-
-    Group operator[](const std::string& name)
-    {
-        return require_group(name);
-    }
-
-    Group open_group(const std::string& name)
-    {
-        return link.open_group(name);
-    }
-
-    Dataset open_dataset(const std::string& name)
-    {
-        return link.open_dataset(name);
-    }
-
-    Group require_group(const std::string& name)
-    {
-        return link.contains(name, Object::group) ? open_group(name) : link.create_group(name);
-    }
-
-    Dataset require_dataset(const std::string& name, const Datatype& type, const Dataspace& space)
-    {
-        if (link.contains(name, Object::dataset))
-        {
-            auto dset = open_dataset(name);
-
-            if (dset.get_type() == type && dset.get_space() == space)
-            {
-                return dset;
-            }
-            throw std::invalid_argument("data set with different type or space already exists");
-        }
-        return link.create_dataset(name, type, space);
-    }
-
 private:
-    friend class File;
-    Group(Link link) : link(std::move(link)) {}
-    Link link;
+    template <class GroupType, class DatasetType> friend class h5::Location;
+    Group(Link link) : Location(std::move(link)) {}
 };
 
 
 
 
 // ============================================================================
-class h5::File final
+class h5::File final : public Location<Group, Dataset>
 {
 public:
 
@@ -681,15 +745,20 @@ public:
         link = std::move(other.link);
     }
 
+    ~File()
+    {
+        close();
+    }
+
     File& operator=(File&& other)
     {
         link = std::move(other.link);
         return *this;
     }
 
-    ~File()
+    void close()
     {
-        close();
+        link.close(Object::file);
     }
 
     Intent intent() const
@@ -705,69 +774,8 @@ public:
         throw;
     }
 
-    void close()
-    {
-        link.close(Object::file);
-    }
-
-    bool is_open() const
-    {
-        return link.id != -1;
-    }
-
-    std::size_t size() const
-    {
-        return link.size();
-    }
-
-    Link::iterator begin() const
-    {
-        return link.begin();
-    }
-
-    Link::iterator end() const
-    {
-        return link.end();
-    }
-
-    Group operator[](const std::string& name)
-    {
-        return require_group(name);
-    }
-
-    Group open_group(const std::string& name)
-    {
-        return link.open_group(name);
-    }
-
-    Dataset open_dataset(const std::string& name)
-    {
-        return link.open_dataset(name);
-    }
-
-    Group require_group(const std::string& name)
-    {
-        return link.contains(name, Object::group) ? open_group(name) : link.create_group(name);
-    }
-
-    Dataset require_dataset(const std::string& name, const Datatype& type, const Dataspace& space)
-    {
-        if (link.contains(name, Object::dataset))
-        {
-            auto dset = open_dataset(name);
-
-            if (dset.get_type() == type && dset.get_space() == space)
-            {
-                return dset;
-            }
-            throw std::invalid_argument("data set with different type or space already exists");
-        }
-        return link.create_dataset(name, type, space);
-    }
-
 private:
-    File(Link link) : link(std::move(link)) {}
-    Link link;
+    File(Link link) : Location(std::move(link)) {}
 };
 
 
@@ -781,7 +789,7 @@ private:
 
 
 
-SCENARIO("files can be created", "[h5::File]")
+SCENARIO("Files can be created", "[h5::File]")
 {
     GIVEN("A file opened for writing")
     {
@@ -827,7 +835,7 @@ SCENARIO("files can be created", "[h5::File]")
 }
 
 
-SCENARIO("groups can be created in files", "[h5::Group]")
+SCENARIO("Groups can be created in files", "[h5::Group]")
 {
     GIVEN("A file opened for writing")
     {
@@ -910,7 +918,7 @@ SCENARIO("Data spaces can be created", "[h5::Dataspace]")
 }
 
 
-SCENARIO("Data sets can be created nd written to", "[h5::Dataset]")
+SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
 {
     GIVEN("A file opened for writing, native double data type, and a scalar data space")
     {
@@ -953,6 +961,8 @@ SCENARIO("Data sets can be created nd written to", "[h5::Dataset]")
             {
                 REQUIRE_NOTHROW(dset.write(data));
                 REQUIRE(dset.read<std::vector<int>>() == data);
+                REQUIRE_THROWS(dset.read<std::vector<double>>());
+                REQUIRE_THROWS(dset.read_scalar<double>());
             }
         }
 
@@ -986,20 +996,60 @@ SCENARIO("Data sets can be created nd written to", "[h5::Dataset]")
         }
     }
 
-    GIVEN("A file opened for writing and a string")
+    GIVEN("A file opened for writing")
     {
         auto data = std::string("The string value");
         auto file = h5::File("test.h5", "w");
         auto type = h5::make_datatype_for(data);
         auto space = h5::Dataspace::scalar();
-        auto dset = file.require_dataset("data", type, space);
+        auto dset = file.require_dataset("data1", type, space);
 
-        THEN("The string can be written to a scalar dataset")
+        THEN("A string can be written to a scalar dataset")
         {
-            REQUIRE_NOTHROW(file.require_dataset("data", type, space));
+            REQUIRE_NOTHROW(file.require_dataset("data1", type, space));
             REQUIRE_NOTHROW(dset.write_scalar(data));
             REQUIRE_THROWS(dset.read_scalar<int>());
             REQUIRE(dset.read_scalar<std::string>() == "The string value");
+        }
+
+        WHEN("A string, int, and double are written directly to the file")
+        {
+            file.write_scalar("data2", data);
+            file.write_scalar("data3", 10.0);
+            file.write_scalar("data4", 11);
+
+            THEN("They can be read back out again")
+            {
+                REQUIRE(file.read_scalar<std::string>("data2") == data);
+                REQUIRE(file.read_scalar<double>("data3") == 10.0);
+                REQUIRE(file.read_scalar<int>("data4") == 11);
+            }
+        }
+    }
+
+    GIVEN("A file opened for writing")
+    {
+        auto file = h5::File("test.h5", "w");
+
+        WHEN("An int and double vector are written to it")
+        {
+            auto data1 = std::vector<int>{1, 2, 3, 4};
+            auto data2 = std::vector<double>{1, 2, 3};
+
+            file.write("data1", data1);
+            file.write("data2", data2);
+
+            THEN("They can be read back again")
+            {
+                REQUIRE(file.read<decltype(data1)>("data1") == data1);
+                REQUIRE(file.read<decltype(data2)>("data2") == data2);
+            }
+
+            THEN("Trying to read the wrong type throws")
+            {
+                REQUIRE_THROWS(file.read<decltype(data2)>("data1"));
+                REQUIRE_THROWS(file.read<decltype(data1)>("data2"));
+            }
         }
     }
 }
