@@ -25,6 +25,7 @@ namespace h5
 
     template<typename T> static inline Datatype make_datatype(std::size_t count=1);
     template<typename T> static inline Datatype make_datatype_for(const T& val);
+    template<typename T> static inline Datatype make_datatype_for(const std::vector<T>& val);
 
     namespace detail {
         class hyperslab;
@@ -34,7 +35,7 @@ namespace h5
     }
 }
 
-#include <iostream>
+
 
 
 // ============================================================================
@@ -218,6 +219,11 @@ template<typename T> h5::Datatype h5::make_datatype_for(const T& val)
     return make_datatype<T>();
 }
 
+template<typename T> h5::Datatype h5::make_datatype_for(const std::vector<T>& val)
+{
+    return make_datatype<T>();
+}
+
 
 
 
@@ -356,7 +362,6 @@ class h5::Link
 {
 private:
 
-    // ========================================================================
     Link() {}
 
     Link(hid_t id) : id(id) {}
@@ -507,9 +512,8 @@ private:
 class h5::Dataset final
 {
 public:
-    Dataset()
-    {
-    }
+
+    Dataset() {}
 
     Dataset(const Dataset&) = delete;
 
@@ -545,7 +549,7 @@ public:
     }
 
     template<typename T>
-    void write_scalar(const T& value)
+    void write(const T& value)
     {
         auto data = detail::scalar_address(value);
         auto type = check_compatible(make_datatype_for(value));
@@ -555,9 +559,9 @@ public:
     }
 
     template<typename T>
-    void write(const T& data)
+    void write(const std::vector<T>& data)
     {
-        auto type = check_compatible(make_datatype<typename T::value_type>());
+        auto type = check_compatible(make_datatype<T>());
         auto mspace = Dataspace{data.size()};
         auto fspace = get_space();
         detail::check(H5Dwrite(link.id, type.id, mspace.id, fspace.id, H5P_DEFAULT, &data[0]));
@@ -705,17 +709,17 @@ public:
     }
 
     template<typename T>
-    void write_scalar(const std::string& name, const T& value)
+    void write(const std::string& name, const T& value)
     {
         auto type = make_datatype_for(value);
         auto space = Dataspace::scalar();
-        require_dataset(name, type, space).write_scalar(value);
+        require_dataset(name, type, space).write(value);
     }
 
     template<typename T>
-    void write(const std::string& name, const T& value)
+    void write(const std::string& name, const std::vector<T>& value)
     {
-        auto type = make_datatype<typename T::value_type>();
+        auto type = make_datatype<T>();
         auto space = Dataspace{value.size()};
         require_dataset(name, type, space).write(value);
     }
@@ -977,6 +981,7 @@ SCENARIO("Data types can be created", "[h5::Datatype]")
     REQUIRE(h5::make_datatype<int>().size() == sizeof(int));
     REQUIRE(h5::make_datatype<double>().size() == sizeof(double));
     REQUIRE(h5::make_datatype_for(std::string("message")).size() == 7);
+    REQUIRE(h5::make_datatype_for(std::vector<int>()).size() == sizeof(int));
 }
 
 
@@ -1103,7 +1108,7 @@ SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
         THEN("The double can be written to a scalar dataset")
         {
             REQUIRE_NOTHROW(file.require_dataset("data", type, space));
-            REQUIRE_NOTHROW(dset.write_scalar(data));
+            REQUIRE_NOTHROW(dset.write(data));
             REQUIRE(dset.read_scalar<double>() == 10.0);
             REQUIRE_THROWS(dset.read_scalar<int>() == 10);
         }
@@ -1120,16 +1125,16 @@ SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
         THEN("A string can be written to a scalar dataset")
         {
             REQUIRE_NOTHROW(file.require_dataset("data1", type, space));
-            REQUIRE_NOTHROW(dset.write_scalar(data));
+            REQUIRE_NOTHROW(dset.write(data));
             REQUIRE_THROWS(dset.read_scalar<int>());
             REQUIRE(dset.read_scalar<std::string>() == "The string value");
         }
 
         WHEN("A string, int, and double are written directly to the file")
         {
-            file.write_scalar("data2", data);
-            file.write_scalar("data3", 10.0);
-            file.write_scalar("data4", 11);
+            file.write("data2", data);
+            file.write("data3", 10.0);
+            file.write("data4", 11);
 
             THEN("They can be read back out again")
             {
