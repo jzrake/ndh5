@@ -10,15 +10,14 @@
 // ============================================================================
 namespace h5
 {
+    template <class GroupType, class DatasetType>
+    class Location;
     class Link;
     class File;
     class Group;
     class Dataset;
     class Datatype;
     class Dataspace;
-
-    template <class GroupType, class DatasetType>
-    class Location;
 
     enum class Intent { rdwr, rdonly, swmr_write, swmr_read };
     enum class Object { file, group, dataset };
@@ -31,6 +30,8 @@ namespace h5
         template<typename T> static inline Datatype make_datatype_for(const std::vector<T>& val);
         template<typename T> static inline Dataspace make_dataspace_for(const T& val);
         template<typename T> static inline Dataspace make_dataspace_for(const std::vector<T>& val);
+        template<typename T> static inline void prepare(const Datatype&, const Dataspace&, T&);
+        template<typename T> static inline void prepare(const Datatype&, const Dataspace&, std::vector<T>&);
         template<typename T> static inline void* get_address(T& val);
         template<typename T> static inline void* get_address(std::vector<T>& val);
         template<typename T> static inline const void* get_address(const T& val);
@@ -146,7 +147,6 @@ const void* h5::detail::get_address(const T& val)
 
 
 
-
 // ============================================================================
 class h5::Datatype final
 {
@@ -207,9 +207,9 @@ public:
     }
 
 private:
+    // ========================================================================
     template<typename T> friend Datatype detail::make_datatype_for(const T&);
     template<typename T> friend Datatype detail::make_datatype_for(const std::vector<T>&);
-
     friend class Link;
     friend class Dataset;
 
@@ -375,8 +375,10 @@ public:
     }
 
 private:
+    // ========================================================================
     friend class Link;
     friend class Dataset;
+
     Dataspace(hid_t id) : id(id) {}
     hid_t id = -1;
 };
@@ -395,6 +397,27 @@ template<typename T>
 h5::Dataspace h5::detail::make_dataspace_for(const std::vector<T>& val)
 {
     return Dataspace{val.size()};
+}
+
+
+
+
+// ============================================================================
+template<typename T>
+void h5::detail::prepare(const Datatype&, const Dataspace&, T&)
+{
+}
+
+template<>
+void h5::detail::prepare(const Datatype& type, const Dataspace&, std::string& value)
+{
+    value.resize(type.size());
+}
+
+template<typename T>
+void h5::detail::prepare(const Datatype&, const Dataspace& space, std::vector<T>& value)
+{
+    value.resize(space.selection_size());
 }
 
 
@@ -481,7 +504,9 @@ private:
             H5P_DEFAULT));
     }
 
-    Link create_dataset(const std::string& name, const Datatype& type, const Dataspace& space)
+    Link create_dataset(const std::string& name,
+                        const Datatype& type,
+                        const Dataspace& space)
     {
         return detail::check(H5Dcreate(
             id,
@@ -538,12 +563,11 @@ private:
 
 
     // ========================================================================
+    template <class GroupType, class DatasetType>
+    friend class Location;
     friend class File;
     friend class Group;
     friend class Dataset;
-
-    template <class GroupType, class DatasetType>
-    friend class h5::Location;
 
     hid_t id = -1;
 };
@@ -596,40 +620,17 @@ public:
     {
         auto data = detail::get_address(value);
         auto type = detail::make_datatype_for(value);
-        auto mspace = Dataspace::scalar();
-        auto fspace = get_space();
-        check_compatible(type);
-        detail::check(H5Dwrite(link.id, type.id, mspace.id, fspace.id, H5P_DEFAULT, data));
-    }
-
-    template<typename T>
-    void write(const std::vector<T>& value)
-    {
-        auto data = detail::get_address(value);
-        auto type = detail::make_datatype_for(value);
         auto mspace = detail::make_dataspace_for(value);
         auto fspace = get_space();
         check_compatible(type);
         detail::check(H5Dwrite(link.id, type.id, mspace.id, fspace.id, H5P_DEFAULT, data));
-    }
-
-    template<typename T>
-    T read_scalar() const
-    {
-        auto value = T();
-        auto data = detail::get_address(value);
-        auto type = detail::make_datatype_for(value);
-        auto mspace = detail::make_dataspace_for(value);
-        auto fspace = get_space();
-        check_compatible(type);
-        detail::check(H5Dread(link.id, type.id, mspace.id, fspace.id, H5P_DEFAULT, data));
-        return value;
     }
 
     template<typename T>
     T read()
     {
-        auto value = T(get_space().size());
+        T value;
+        detail::prepare(get_type(), get_space(), value);
         auto data = detail::get_address(value);
         auto type = detail::make_datatype_for(value);
         auto mspace = detail::make_dataspace_for(value);
@@ -640,7 +641,6 @@ public:
     }
 
 private:
-
     // ========================================================================
     Datatype check_compatible(const Datatype& type) const
     {
@@ -650,28 +650,14 @@ private:
         }
         return type;
     }
-    template <class GroupType, class DatasetType>
-    friend class h5::Location;
 
     // ========================================================================
+    template <class GroupType, class DatasetType>
+    friend class Location;
+
     Dataset(Link link) : link(std::move(link)) {}
     Link link;
 };
-
-
-
-
-// ============================================================================
-template<>
-std::string h5::Dataset::read_scalar<std::string>() const
-{
-    auto data = std::string(get_type().size(), '\0');
-    auto type = detail::make_datatype_for(data);
-    auto mspace = Dataspace::scalar();
-    auto fspace = get_space();
-    detail::check(H5Dread(link.id, type.id, mspace.id, fspace.id, H5P_DEFAULT, &data[0]));
-    return data;
-}
 
 
 
@@ -729,7 +715,11 @@ public:
 
     GroupType require_group(const std::string& name)
     {
-        return link.contains(name, Object::group) ? open_group(name) : link.create_group(name);
+        if (link.contains(name, Object::group))
+        {
+            return open_group(name);
+        }
+        return link.create_group(name);
     }
 
     DatasetType open_dataset(const std::string& name)
@@ -737,17 +727,21 @@ public:
         return link.open_dataset(name);
     }
 
-    DatasetType require_dataset(const std::string& name, const Datatype& type, const Dataspace& space)
+    DatasetType require_dataset(const std::string& name,
+                                const Datatype& type,
+                                const Dataspace& space)
     {
         if (link.contains(name, Object::dataset))
         {
             auto dset = open_dataset(name);
 
-            if (dset.get_type() == type && dset.get_space() == space)
+            if (dset.get_type() == type &&
+                dset.get_space() == space)
             {
                 return dset;
             }
-            throw std::invalid_argument("data set with different type or space already exists");
+            throw std::invalid_argument(
+                "data set with different type or space already exists");
         }
         return link.create_dataset(name, type, space);
     }
@@ -762,30 +756,8 @@ public:
     void write(const std::string& name, const T& value)
     {
         auto type = detail::make_datatype_for(value);
-        auto space = Dataspace::scalar();
+        auto space = detail::make_dataspace_for(value);
         require_dataset(name, type, space).write(value);
-    }
-
-    template<typename T>
-    void write(const std::string& name, const std::vector<T>& value)
-    {
-        auto type = detail::make_datatype_for(T());
-        auto space = Dataspace{value.size()};
-        require_dataset(name, type, space).write(value);
-    }
-
-    template<typename T, int R>
-    void write(const std::string& name, const nd::ndarray<T, R>& data)
-    {
-        auto type = detail::make_datatype_for(T());
-        auto space = Dataspace(data.get_selector());
-        // require_dataset(name, type, space).write(data);        
-    }
-
-    template<typename T>
-    T read_scalar(const std::string& name)
-    {
-        return open_dataset(name).template read_scalar<T>();
     }
 
     template<typename T>
@@ -795,6 +767,7 @@ public:
     }
 
 protected:
+    // ========================================================================
     Location(Link link) : link(std::move(link)) {}
     Link link;
 };
@@ -908,6 +881,7 @@ public:
     }
 
 private:
+    // ========================================================================
     File(Link link) : Location(std::move(link)) {}
 };
 
@@ -1130,7 +1104,7 @@ SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
                 REQUIRE_NOTHROW(dset.write(data));
                 REQUIRE(dset.read<std::vector<int>>() == data);
                 REQUIRE_THROWS(dset.read<std::vector<double>>());
-                REQUIRE_THROWS(dset.read_scalar<double>());
+                REQUIRE_THROWS(dset.read<double>());
             }
         }
 
@@ -1159,8 +1133,8 @@ SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
         {
             REQUIRE_NOTHROW(file.require_dataset("data", type, space));
             REQUIRE_NOTHROW(dset.write(data));
-            REQUIRE(dset.read_scalar<double>() == 10.0);
-            REQUIRE_THROWS(dset.read_scalar<int>() == 10);
+            REQUIRE(dset.read<double>() == 10.0);
+            REQUIRE_THROWS(dset.read<int>() == 10);
         }
     }
 
@@ -1176,8 +1150,8 @@ SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
         {
             REQUIRE_NOTHROW(file.require_dataset("data1", type, space));
             REQUIRE_NOTHROW(dset.write(data));
-            REQUIRE_THROWS(dset.read_scalar<int>());
-            REQUIRE(dset.read_scalar<std::string>() == "The string value");
+            REQUIRE_THROWS(dset.read<int>());
+            REQUIRE(dset.read<std::string>() == "The string value");
         }
 
         WHEN("A string, int, and double are written directly to the file")
@@ -1188,9 +1162,9 @@ SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
 
             THEN("They can be read back out again")
             {
-                REQUIRE(file.read_scalar<std::string>("data2") == data);
-                REQUIRE(file.read_scalar<double>("data3") == 10.0);
-                REQUIRE(file.read_scalar<int>("data4") == 11);
+                REQUIRE(file.read<std::string>("data2") == data);
+                REQUIRE(file.read<double>("data3") == 10.0);
+                REQUIRE(file.read<int>("data4") == 11);
             }
         }
     }
