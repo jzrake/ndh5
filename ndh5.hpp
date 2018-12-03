@@ -302,7 +302,7 @@ public:
     Dataspace& operator=(const Dataspace& other)
     {
         close();
-        id = H5Scopy(other.id);
+        id = detail::check(H5Scopy(other.id));
         return *this;
     }
 
@@ -320,7 +320,7 @@ public:
     {
         if (id != -1)
         {
-            H5Sclose(id);
+            detail::check(H5Sclose(id));
         }
     }
 
@@ -618,10 +618,15 @@ public:
     template<typename T>
     void write(const T& value)
     {
+        write(value, get_space());
+    }
+
+    template<typename T>
+    void write(const T& value, const Dataspace& fspace)
+    {
         auto data = detail::get_address(value);
         auto type = detail::make_datatype_for(value);
         auto mspace = detail::make_dataspace_for(value);
-        auto fspace = get_space();
         check_compatible(type);
         detail::check(H5Dwrite(link.id, type.id, mspace.id, fspace.id, H5P_DEFAULT, data));
     }
@@ -629,12 +634,25 @@ public:
     template<typename T>
     T read()
     {
+        return read<T>(get_space());
+    }
+
+    template<typename T, typename Selector>
+    T read(Selector sel)
+    {
+        auto extent = get_space().extent();
+        auto fspace = Dataspace(nd::with_count(sel, extent.begin(), extent.end()));
+        return read<T>(fspace);
+    }
+
+    template<typename T>
+    T read(const Dataspace& fspace)
+    {
         T value;
-        detail::prepare(get_type(), get_space(), value);
+        detail::prepare(get_type(), fspace, value);
         auto data = detail::get_address(value);
         auto type = detail::make_datatype_for(value);
         auto mspace = detail::make_dataspace_for(value);
-        auto fspace = get_space();
         check_compatible(type);
         detail::check(H5Dread(link.id, type.id, mspace.id, fspace.id, H5P_DEFAULT, data));
         return value;
@@ -764,6 +782,12 @@ public:
     T read(const std::string& name)
     {
         return open_dataset(name).template read<T>();
+    }
+
+    template<typename T, typename Selector>
+    T read(const std::string& name, Selector sel)
+    {
+        return open_dataset(name).template read<T>(sel);
     }
 
 protected:
@@ -1189,7 +1213,7 @@ SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
 
             THEN("Trying to read the wrong type throws")
             {
-                REQUIRE_THROWS(file.read<decltype(data2)>("data1"));
+                REQUIRE_THROWS(file.read<decltype(data2)>("data1")); // mismatched data types
                 REQUIRE_THROWS(file.read<decltype(data1)>("data2"));
             }
         }
@@ -1197,11 +1221,20 @@ SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
 }
 
 
-SCENARIO("Data sets can be selected on using ndarray syntax", "[h5::Dataset]")
+SCENARIO("Data sets can be selected on using ndarray syntax", "[nd::selector]")
 {
+    using D   = std::vector<double>;
+    auto _    = nd::axis::all();
     auto file = h5::File("test.h5", "w");
-    auto dset = file.require_dataset<double>("data", {10, 20});
-    // dset.select()
-    // dset.write(data);
+    auto dset = file.require_dataset<double>("data", {5});
+
+    dset.write(D{0, 1, 2, 3, 4});
+
+    REQUIRE(dset.read<D>(nd::selector<1>(5).slice(0, 2, 1)) == D{0, 1});
+    REQUIRE(dset.read<D>(nd::make_selector(_|0|2)) == D{0, 1});
+    REQUIRE(dset.read<D>(nd::make_selector(_|0|4|2)) == D{0, 2});
+    REQUIRE_THROWS(dset.read<D>(nd::make_selector(_|0|6)));   // out-of-bounds
+    REQUIRE_THROWS(dset.read<D>(nd::make_selector(_|2|8|2))); // out-of-bounds
+    REQUIRE_THROWS(dset.read<D>(nd::make_selector(_, _)));    // wrong rank
 }
 #endif // TEST_NDH5

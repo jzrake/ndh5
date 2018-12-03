@@ -1,4 +1,4 @@
-CXXFLAGS = -std=c++14
+CXXFLAGS = -std=c++14 -I/Users/jzrake/Work/ndarray/include
 
 HEADERS = ndh5.hpp
 
