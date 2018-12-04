@@ -4,7 +4,7 @@
 #include <hdf5.h>
 #include <ndarray.hpp>
 
-
+#include <iostream>
 
 
 // ============================================================================
@@ -25,17 +25,23 @@ namespace h5
     namespace detail {
         class hyperslab;
         static inline herr_t get_last_error(unsigned, const H5E_error2_t*, void*);
-        template<typename T> static inline T check(T result);
-        template<typename T> static inline Datatype make_datatype_for(const T& val);
-        template<typename T> static inline Datatype make_datatype_for(const std::vector<T>& val);
-        template<typename T> static inline Dataspace make_dataspace_for(const T& val);
-        template<typename T> static inline Dataspace make_dataspace_for(const std::vector<T>& val);
+        template<typename T> static inline T check(T);
+        template<typename T> static inline Datatype make_datatype_for(const T&);
+        template<typename T> static inline Datatype make_datatype_for(const std::vector<T>&);
+        template<typename T> static inline Dataspace make_dataspace_for(const T&, bool selected_part=false);
+        template<typename T> static inline Dataspace make_dataspace_for(const std::vector<T>&, bool selected_part=false);
         template<typename T> static inline void prepare(const Datatype&, const Dataspace&, T&);
         template<typename T> static inline void prepare(const Datatype&, const Dataspace&, std::vector<T>&);
-        template<typename T> static inline void* get_address(T& val);
-        template<typename T> static inline void* get_address(std::vector<T>& val);
-        template<typename T> static inline const void* get_address(const T& val);
-        template<typename T> static inline const void* get_address(const std::vector<T>& val);
+        template<typename T> static inline void* get_address(T&);
+        template<typename T> static inline void* get_address(std::vector<T>&);
+        template<typename T> static inline const void* get_address(const T&);
+        template<typename T> static inline const void* get_address(const std::vector<T>&);
+
+        template<typename T, int R> static inline Datatype make_datatype_for(const nd::ndarray<T, R>&);
+        template<typename T, int R> static inline Dataspace make_dataspace_for(const nd::ndarray<T, R>&, bool selected_part=false);
+        template<typename T, int R> static inline void prepare(const Datatype&, const Dataspace&, nd::ndarray<T, R>&);
+        template<typename T, int R> static inline void* get_address(nd::ndarray<T, R>&);
+        template<typename T, int R> static inline const void* get_address(const nd::ndarray<T, R>&);
     }
 }
 
@@ -125,6 +131,11 @@ void* h5::detail::get_address(T& val)
 {
     return &val;
 }
+template<typename T, int R>
+void* h5::detail::get_address(nd::ndarray<T, R>& val)
+{
+    return val.data();
+}
 
 template<>
 const void* h5::detail::get_address<std::string>(const std::string& val)
@@ -142,6 +153,12 @@ template<typename T>
 const void* h5::detail::get_address(const T& val)
 {
     return &val;
+}
+
+template<typename T, int R>
+const void* h5::detail::get_address(const nd::ndarray<T, R>& val)
+{
+    return val.data();
 }
 
 
@@ -210,6 +227,7 @@ private:
     // ========================================================================
     template<typename T> friend Datatype detail::make_datatype_for(const T&);
     template<typename T> friend Datatype detail::make_datatype_for(const std::vector<T>&);
+    template<typename T, int R> friend Datatype detail::make_datatype_for(const nd::ndarray<T, R>&); // NEED?
     friend class Link;
     friend class Dataset;
 
@@ -247,6 +265,12 @@ h5::Datatype h5::detail::make_datatype_for<double>(const double& val)
 
 template<typename T>
 h5::Datatype h5::detail::make_datatype_for(const std::vector<T>& val)
+{
+    return make_datatype_for(T());
+}
+
+template<typename T, int R>
+h5::Datatype h5::detail::make_datatype_for(const nd::ndarray<T, R>& val)
 {
     return make_datatype_for(T());
 }
@@ -388,15 +412,25 @@ private:
 
 // ============================================================================
 template<typename T>
-h5::Dataspace h5::detail::make_dataspace_for(const T& val)
+h5::Dataspace h5::detail::make_dataspace_for(const T& val, bool)
 {
     return Dataspace::scalar();
 }
 
 template<typename T>
-h5::Dataspace h5::detail::make_dataspace_for(const std::vector<T>& val)
+h5::Dataspace h5::detail::make_dataspace_for(const std::vector<T>& val, bool)
 {
     return Dataspace{val.size()};
+}
+
+template<typename T, int R>
+h5::Dataspace h5::detail::make_dataspace_for(const nd::ndarray<T, R>& val, bool selected_part)
+{
+    if (selected_part)
+    {
+        return Dataspace::simple(val.shape());
+    }
+    return val.get_selector();
 }
 
 
@@ -418,6 +452,28 @@ template<typename T>
 void h5::detail::prepare(const Datatype&, const Dataspace& space, std::vector<T>& value)
 {
     value.resize(space.selection_size());
+}
+
+template<typename T, int R>
+void h5::detail::prepare(const Datatype&, const Dataspace& space, nd::ndarray<T, R>& val)
+{
+    std::array<int, R> dim_sizes;
+
+    if (space.rank() != R)
+    {
+        throw std::invalid_argument("data space has the wrong rank for target array");
+    }
+
+    auto upper = space.selection_upper();
+    auto lower = space.selection_lower();
+
+    for (int n = 0; n < R; ++n)
+    {
+        dim_sizes[n] = upper[n] - lower[n] + 1;
+    }
+
+    auto target = nd::array<T, R>(dim_sizes);
+    val.become(target);
 }
 
 
@@ -621,6 +677,14 @@ public:
         write(value, get_space());
     }
 
+    template<typename T, typename Selector>
+    T write(const T& value, Selector sel)
+    {
+        auto extent = get_space().extent();
+        auto fspace = Dataspace(nd::with_count(sel, extent.begin(), extent.end()));
+        return write(value, fspace);
+    }
+
     template<typename T>
     void write(const T& value, const Dataspace& fspace)
     {
@@ -774,8 +838,16 @@ public:
     void write(const std::string& name, const T& value)
     {
         auto type = detail::make_datatype_for(value);
-        auto space = detail::make_dataspace_for(value);
+        auto space = detail::make_dataspace_for(value, true);
         require_dataset(name, type, space).write(value);
+    }
+
+    template<typename T, typename Selector>
+    void write(const std::string& name, const T& value, Selector sel)
+    {
+        auto type = detail::make_datatype_for(value);
+        auto space = detail::make_dataspace_for(value, true);
+        require_dataset(name, type, space).write(value, sel);
     }
 
     template<typename T>
@@ -1221,7 +1293,7 @@ SCENARIO("Data sets can be created, read, and written to", "[h5::Dataset]")
 }
 
 
-SCENARIO("Data sets can be selected on using ndarray syntax", "[nd::selector]")
+SCENARIO("Data sets can be selected on using ndarray syntax", "[h5::Dataspace] [nd::selector]")
 {
     using D   = std::vector<double>;
     auto _    = nd::axis::all();
@@ -1237,4 +1309,41 @@ SCENARIO("Data sets can be selected on using ndarray syntax", "[nd::selector]")
     REQUIRE_THROWS(dset.read<D>(nd::make_selector(_|2|8|2))); // out-of-bounds
     REQUIRE_THROWS(dset.read<D>(nd::make_selector(_, _)));    // wrong rank
 }
+
+
+SCENARIO("nd::ndarray interaction works", "[h5::Dataset] [nd::ndarray]")
+{
+    auto _ = nd::axis::all();
+
+    GIVEN("A file open for writing and a 1D array")
+    {
+        auto file = h5::File("test.h5", "w");
+        auto data = nd::arange<double>(100);
+
+        THEN("The array can be written to the file and read back again")
+        {
+            REQUIRE_NOTHROW(file.write("data", data));
+            REQUIRE((file.read<decltype(data)>("data") == data).all());
+        }
+
+        WHEN("The array is resized to a 2D array")
+        {
+            auto data2 = data.reshape(10, 10);
+
+            THEN("The array can still be written to the file and read back again")
+            {
+                REQUIRE_NOTHROW(file.write("data2", data2));
+                REQUIRE((file.read<decltype(data2)>("data2") == data2).all());
+            }
+
+            THEN("A subset of the 2d array can be written and read back")
+            {
+                auto data3 = data2.select(0, _);
+                REQUIRE_NOTHROW(file.write("data3", data3));
+                REQUIRE((file.read<decltype(data3)>("data3") == data3).all());
+            }
+        }
+    }
+}
+
 #endif // TEST_NDH5
