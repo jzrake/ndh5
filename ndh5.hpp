@@ -4,7 +4,7 @@
 #include <hdf5.h>
 #include <ndarray.hpp>
 
-#include <iostream>
+
 
 
 // ============================================================================
@@ -246,31 +246,31 @@ h5::Datatype h5::detail::make_datatype_for<std::string>(const std::string& val)
 }
 
 template<>
-h5::Datatype h5::detail::make_datatype_for<char>(const char& val)
+h5::Datatype h5::detail::make_datatype_for<char>(const char&)
 {
     return H5Tcopy(H5T_C_S1);
 }
 
 template<>
-h5::Datatype h5::detail::make_datatype_for<int>(const int& val)
+h5::Datatype h5::detail::make_datatype_for<int>(const int&)
 {
     return H5Tcopy(H5T_NATIVE_INT);
 }
 
 template<>
-h5::Datatype h5::detail::make_datatype_for<double>(const double& val)
+h5::Datatype h5::detail::make_datatype_for<double>(const double&)
 {
     return H5Tcopy(H5T_NATIVE_DOUBLE);
 }
 
 template<typename T>
-h5::Datatype h5::detail::make_datatype_for(const std::vector<T>& val)
+h5::Datatype h5::detail::make_datatype_for(const std::vector<T>&)
 {
     return make_datatype_for(T());
 }
 
 template<typename T, int R>
-h5::Datatype h5::detail::make_datatype_for(const nd::ndarray<T, R>& val)
+h5::Datatype h5::detail::make_datatype_for(const nd::ndarray<T, R>&)
 {
     return make_datatype_for(T());
 }
@@ -412,7 +412,7 @@ private:
 
 // ============================================================================
 template<typename T>
-h5::Dataspace h5::detail::make_dataspace_for(const T& val, bool)
+h5::Dataspace h5::detail::make_dataspace_for(const T&, bool)
 {
     return Dataspace::scalar();
 }
@@ -970,8 +970,8 @@ public:
 
         if (intent == H5F_ACC_RDWR)       return Intent::rdwr;
         if (intent == H5F_ACC_RDONLY)     return Intent::rdonly;
-        if (intent == H5F_ACC_SWMR_WRITE) return Intent::swmr_write;
-        if (intent == H5F_ACC_SWMR_READ)  return Intent::swmr_read;
+        // if (intent == H5F_ACC_SWMR_WRITE) return Intent::swmr_write;
+        // if (intent == H5F_ACC_SWMR_READ)  return Intent::swmr_read;
 
         throw;
     }

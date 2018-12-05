@@ -5,7 +5,7 @@
 
 
 
-static herr_t h5_error_handler(hid_t estack, void *unused)
+static herr_t h5_error_handler(hid_t /*estack*/, void*)
 {
     // H5Eprint(estack, stdout);
     return 0;
