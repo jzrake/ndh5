@@ -106,9 +106,10 @@ T h5::detail::check(T result)
         H5E_error2_t err;
         hid_t eid = H5Eget_current_stack();
         H5Ewalk(eid, H5E_WALK_UPWARD, get_last_error, &err);
+        std::string what = err.desc;
         H5Eclear(eid);
         H5Eclose_stack(eid);
-        throw std::invalid_argument(err.desc);
+        throw std::invalid_argument(what);
     }
     return result;
 }
