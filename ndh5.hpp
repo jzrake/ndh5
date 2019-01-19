@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <hdf5.h>
+//#include "../ndarray/include/ndarray.hpp"
 
 
 
@@ -42,6 +43,8 @@ namespace h5
         template<typename T, int R> static inline void* get_address(nd::ndarray<T, R>&);
         template<typename T, int R> static inline const void* get_address(const nd::ndarray<T, R>&);
     }
+
+    template<typename T> static inline Datatype native_type();
 }
 
 
@@ -139,25 +142,25 @@ inline void* h5::detail::get_address(nd::ndarray<T, R>& val)
 }
 
 template<>
-const inline void* h5::detail::get_address<std::string>(const std::string& val)
+inline const void* h5::detail::get_address<std::string>(const std::string& val)
 {
     return &val[0];
 }
 
 template<typename T>
-const inline void* h5::detail::get_address(const std::vector<T>& val)
+inline const void* h5::detail::get_address(const std::vector<T>& val)
 {
     return &val[0];
 }
 
 template<typename T>
-const inline void* h5::detail::get_address(const T& val)
+inline const void* h5::detail::get_address(const T& val)
 {
     return &val;
 }
 
 template<typename T, int R>
-const inline void* h5::detail::get_address(const nd::ndarray<T, R>& val)
+inline const void* h5::detail::get_address(const nd::ndarray<T, R>& val)
 {
     return val.data();
 }
@@ -275,6 +278,18 @@ inline h5::Datatype h5::detail::make_datatype_for(const nd::ndarray<T, R>&)
 {
     return make_datatype_for(T());
 }
+
+
+
+
+
+// ============================================================================
+template<typename T>
+inline h5::Datatype h5::native_type()
+{
+    return detail::make_datatype_for(T());
+}
+
 
 
 
